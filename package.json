@@ -1,0 +1,32 @@
+{
+  "name": "drone-sim",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "node scripts/copy-cesium-assets.mjs"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.13.5",
+    "@emotion/styled": "^11.13.5",
+    "@mui/icons-material": "^7.0.0",
+    "@mui/material": "^7.0.0",
+    "cesium": "^1.124.0",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.171.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/cesium": "^1.70.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.171.0",
+    "typescript": "^5.7.2"
+  }
+}
