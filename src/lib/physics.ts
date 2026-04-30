@@ -1,66 +1,64 @@
 /**
- * Simplified quadcopter physics in local East-North-Up (ENU) frame.
+ * Arcade flight model in local East-North-Up (ENU) frame.
  *
- * Convention:
- *   x = East   (right when facing north)
- *   y = North  (forward when heading = 0)
+ *   x = East   (+right when facing north)
+ *   y = North  (+forward when heading = 0)
  *   z = Up
  *
- *   heading: rotation about +z, 0 = north, +ve = clockwise from above (radians)
- *   pitch:   rotation about local x (east) axis after heading; +ve = nose up
- *   roll:    rotation about local y (north) axis after heading+pitch; +ve = right wing down
+ * Per the requirements doc §6: this is NOT a physics simulation. Inputs map
+ * directly to a target velocity in the heading-aligned frame, and the drone's
+ * actual velocity follows the target with an exponential time constant. With
+ * no input, the target is zero and the drone hovers in place — no gravity, no
+ * thrust, no drag terms to balance.
  *
- * The flight model is "self-leveling angle mode" for pitch/roll (inputs map to
- * target lean angles) and rate mode for yaw — this matches how most consumer
- * drones feel in their stabilized flight mode.
+ * Pitch and roll are cosmetic only: the body leans into the input direction so
+ * the chase view shows believable banking, but the lean has no effect on motion.
  */
 
 export interface DroneState {
-  // Position relative to ENU origin, meters
   position: [number, number, number];
-  // Velocity in ENU frame, m/s
   velocity: [number, number, number];
-  // Euler angles, radians
-  heading: number;
-  pitch: number;
-  roll: number;
-  // Battery 0..1
-  battery: number;
+  heading: number; // radians, 0 = north, +ve = clockwise from above
+  pitch: number;   // radians, cosmetic lean only
+  roll: number;    // radians, cosmetic lean only
+  battery: number; // 0..1
 }
 
 export interface ControlInput {
-  throttle: number; // 0..1
-  pitch: number;    // -1..1 (forward = +1)
-  roll: number;     // -1..1 (right = +1)
-  yaw: number;      // -1..1 (right = +1)
+  forward: number;     // -1..1   W/↑ = +1, S/↓ = -1
+  vertical: number;    // -1..1   Q/Space = +1, E/Ctrl = -1
+  yawRate: number;     // -1..1   D/→ = +1, A/← = -1
+  mouseYawRad: number; // direct heading delta from mouse drag (radians)
+  boost: number;       // multiplier on max speed; 1.0 normal, >1 sprinting (Shift)
 }
 
 export interface DroneParams {
-  mass: number;            // kg
-  maxThrust: number;       // N (total, all 4 motors at full)
-  hoverThrottle: number;   // throttle value that produces thrust = mg
-  maxLeanDeg: number;      // peak target pitch/roll angle in angle mode
-  maxYawRateDeg: number;   // peak yaw rate, deg/s
-  stabilizeRate: number;   // 1/s — how fast actual angle approaches target
-  linearDrag: number;      // N·s/m
-  batteryDrainRate: number;// fraction per second at full throttle
+  maxHorizSpeed: number;     // m/s
+  maxVertSpeed: number;      // m/s
+  yawRateDeg: number;        // deg/s for keyboard yaw
+  followTimeConstSec: number;// velocity follow time constant (§6.3 = 0.3s)
+  visualLeanDeg: number;     // peak cosmetic lean angle (§6.3 = 25°)
+  leanRate: number;          // 1/s — how fast actual lean approaches target
+  minAltitude: number;       // m AGL clamp (§6.3 = 5m)
+  batteryDrainRate: number;  // fraction per second under full input
 }
 
 export const DEFAULT_PARAMS: DroneParams = {
-  mass: 0.9,                // ~DJI Mavic class
-  maxThrust: 22,            // N — gives ~2.5:1 thrust-to-weight
-  hoverThrottle: 0.4,
-  maxLeanDeg: 30,
-  maxYawRateDeg: 120,
-  stabilizeRate: 6,
-  linearDrag: 0.35,
-  batteryDrainRate: 1 / (15 * 60), // 15 minutes at full throttle
+  // Spec §6.3 starting values were 25/10/90/0.3 but at 200 m altitude looking
+  // down on the skyline, that reads as glacial. Bumped for demo punch.
+  maxHorizSpeed: 60,
+  maxVertSpeed: 20,
+  yawRateDeg: 120,
+  followTimeConstSec: 0.2,
+  visualLeanDeg: 25,
+  leanRate: 6,
+  minAltitude: 5,
+  batteryDrainRate: 1 / (15 * 60),
 };
 
-const G = 9.80665;
 const DEG = Math.PI / 180;
 
-export function createInitialState(altitude = 2): DroneState {
+export function createInitialState(altitude = 200): DroneState {
   return {
     position: [0, 0, altitude],
     velocity: [0, 0, 0],
@@ -71,97 +69,61 @@ export function createInitialState(altitude = 2): DroneState {
   };
 }
 
-/**
- * Rotate a body-frame vector into the ENU world frame using the drone's
- * heading/pitch/roll. Order: yaw (Z) -> pitch (X) -> roll (Y).
- */
-function bodyToWorld(
-  v: [number, number, number],
-  heading: number,
-  pitch: number,
-  roll: number,
-): [number, number, number] {
-  const ch = Math.cos(heading), sh = Math.sin(heading);
-  const cp = Math.cos(pitch),   sp = Math.sin(pitch);
-  const cr = Math.cos(roll),    sr = Math.sin(roll);
-
-  // R = Rz(heading) * Rx(pitch) * Ry(roll)  applied to body vector.
-  // Note: heading is clockwise-from-above, so Rz uses (ch, sh) with sign flips.
-  const [bx, by, bz] = v;
-
-  // Ry(roll)
-  const x1 =  cr * bx + sr * bz;
-  const y1 =  by;
-  const z1 = -sr * bx + cr * bz;
-
-  // Rx(pitch)
-  const x2 = x1;
-  const y2 = cp * y1 - sp * z1;
-  const z2 = sp * y1 + cp * z1;
-
-  // Rz(heading) — clockwise from above means rotating East toward South
-  const x3 =  ch * x2 + sh * y2;
-  const y3 = -sh * x2 + ch * y2;
-  const z3 =  z2;
-
-  return [x3, y3, z3];
-}
-
 export function stepPhysics(
   state: DroneState,
   input: ControlInput,
   params: DroneParams,
   dt: number,
 ): DroneState {
-  // --- Attitude (angle-mode pitch/roll, rate-mode yaw) ---
-  const targetPitch = input.pitch * params.maxLeanDeg * DEG;
-  const targetRoll  = input.roll  * params.maxLeanDeg * DEG;
+  // --- Heading: keyboard rate + raw mouse delta ---
+  const heading =
+    state.heading +
+    input.yawRate * params.yawRateDeg * DEG * dt +
+    input.mouseYawRad;
 
-  // Exponential approach toward target angle. alpha = 1 - exp(-rate*dt)
-  const alpha = 1 - Math.exp(-params.stabilizeRate * dt);
-  const pitch = state.pitch + (targetPitch - state.pitch) * alpha;
-  const roll  = state.roll  + (targetRoll  - state.roll ) * alpha;
-  const heading = state.heading + input.yaw * params.maxYawRateDeg * DEG * dt;
+  // --- Target velocity in world ENU, aligned to heading ---
+  // Forward unit (heading=0 → +North): (sin h, cos h)
+  const sh = Math.sin(heading);
+  const ch = Math.cos(heading);
+  const boost = Math.max(1, input.boost);
+  const targetEast = input.forward * sh * params.maxHorizSpeed * boost;
+  const targetNorth = input.forward * ch * params.maxHorizSpeed * boost;
+  const targetUp = input.vertical * params.maxVertSpeed * boost;
 
-  // --- Linear dynamics ---
-  // Thrust along body +z, rotated to world.
-  const thrustMag = input.throttle * params.maxThrust;
-  const [tx, ty, tz] = bodyToWorld([0, 0, thrustMag], heading, pitch, roll);
-
-  // Gravity
-  const gz = -G * params.mass;
-
-  // Drag opposing velocity
+  // --- Exponential approach toward target velocity ---
+  // alpha = 1 - exp(-dt / tau).  Larger tau → softer response.
+  const alpha = 1 - Math.exp(-dt / params.followTimeConstSec);
   const [vx, vy, vz] = state.velocity;
-  const dx = -params.linearDrag * vx;
-  const dy = -params.linearDrag * vy;
-  const dz = -params.linearDrag * vz;
+  const nvx = vx + (targetEast - vx) * alpha;
+  const nvy = vy + (targetNorth - vy) * alpha;
+  let nvz = vz + (targetUp - vz) * alpha;
 
-  // Sum forces -> acceleration
-  const ax = (tx + dx) / params.mass;
-  const ay = (ty + dy) / params.mass;
-  const az = (tz + gz + dz) / params.mass;
-
-  // Integrate
-  let nvx = vx + ax * dt;
-  let nvy = vy + ay * dt;
-  let nvz = vz + az * dt;
-
+  // --- Integrate position ---
   let nx = state.position[0] + nvx * dt;
   let ny = state.position[1] + nvy * dt;
   let nz = state.position[2] + nvz * dt;
 
-  // Ground collision (very simple — z=0 plane). Real terrain follow comes in a later phase.
-  if (nz < 0) {
-    nz = 0;
+  // Clamp at min altitude (simple ground guard; real terrain follow comes later)
+  if (nz < params.minAltitude) {
+    nz = params.minAltitude;
     if (nvz < 0) nvz = 0;
-    // Friction on touchdown
-    nvx *= 0.85;
-    nvy *= 0.85;
   }
 
-  // --- Battery ---
-  const drainRate = params.batteryDrainRate * (0.2 + 0.8 * input.throttle);
+  // --- Cosmetic body lean ---
+  // Forward input → nose-down lean, yaw input → bank into the turn.
+  const targetPitch = -input.forward * params.visualLeanDeg * DEG;
+  const targetRoll = input.yawRate * params.visualLeanDeg * DEG * 0.6;
+  const leanAlpha = 1 - Math.exp(-params.leanRate * dt);
+  const pitch = state.pitch + (targetPitch - state.pitch) * leanAlpha;
+  const roll = state.roll + (targetRoll - state.roll) * leanAlpha;
+
+  // --- Battery drain proportional to input intensity ---
+  const intensity = clamp01(
+    Math.abs(input.forward) +
+      Math.abs(input.vertical) +
+      Math.abs(input.yawRate) * 0.3,
+  );
+  const drainRate = params.batteryDrainRate * (0.25 + 0.75 * intensity);
   const battery = Math.max(0, state.battery - drainRate * dt);
 
   return {
@@ -172,6 +134,10 @@ export function stepPhysics(
     roll,
     battery,
   };
+}
+
+function clamp01(v: number) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
 // --- Telemetry helpers ---

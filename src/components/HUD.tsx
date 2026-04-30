@@ -67,9 +67,11 @@ export default function HUD() {
           {cameraMode.toUpperCase()}
         </Typography>
         <Typography variant="caption" sx={{ display: "block", mt: 1.5, color: HUD_DIM, lineHeight: 1.6 }}>
-          W/S throttle &nbsp; A/D yaw<br />
-          ↑↓ pitch &nbsp; ←→ roll<br />
-          SPACE boost &nbsp; C cam &nbsp; R reset
+          WASD / 矢印 = 前後・旋回<br />
+          Q / Space = 上昇 &nbsp; E / Ctrl = 下降<br />
+          <span style={{ color: HUD_AMBER }}>Shift = ブースト (×2.5)</span><br />
+          マウス左ドラッグ = 視点 &nbsp; ダブルクリック = 移動<br />
+          C = カメラ &nbsp; R = リセット &nbsp; Esc = 一時停止
         </Typography>
       </Box>
 

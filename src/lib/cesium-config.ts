@@ -25,10 +25,11 @@ export function configureCesium() {
   _configured = true;
 }
 
-/** Spawn point — Tokyo Station area, ~30 m AGL. Override via props later. */
+/** Spawn point — Tokyo Station area, ~200 m AGL so the drone starts hovering
+ *  comfortably above the city skyline. */
 export const SPAWN_LON = 139.7670;
 export const SPAWN_LAT = 35.6814;
-export const SPAWN_ALT = 30;
+export const SPAWN_ALT = 200;
 
 /** Compose a 4x4 transform that places an object at (lon,lat,alt) with a given
  *  heading/pitch/roll, expressed in the local ENU frame at that point. */

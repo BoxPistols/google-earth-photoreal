@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <rect width="180" height="180" rx="36" fill="#0b1220"/>
+  <g stroke="#7dd3fc" stroke-width="9" stroke-linecap="round" fill="none">
+    <line x1="90" y1="90" x2="36" y2="36"/>
+    <line x1="90" y1="90" x2="144" y2="36"/>
+    <line x1="90" y1="90" x2="36" y2="144"/>
+    <line x1="90" y1="90" x2="144" y2="144"/>
+  </g>
+  <g fill="#38bdf8">
+    <circle cx="36" cy="36" r="17"/>
+    <circle cx="144" cy="36" r="17"/>
+    <circle cx="36" cy="144" r="17"/>
+    <circle cx="144" cy="144" r="17"/>
+  </g>
+  <g stroke="#bae6fd" stroke-width="2" opacity="0.6" fill="none">
+    <ellipse cx="36" cy="36" rx="22" ry="6"/>
+    <ellipse cx="144" cy="36" rx="22" ry="6"/>
+    <ellipse cx="36" cy="144" rx="22" ry="6"/>
+    <ellipse cx="144" cy="144" rx="22" ry="6"/>
+  </g>
+  <circle cx="90" cy="90" r="18" fill="#f8fafc"/>
+  <circle cx="90" cy="90" r="7" fill="#0b1220"/>
+</svg>
