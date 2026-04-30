@@ -10,10 +10,11 @@ export function configureCesium() {
 
   // Tell Cesium where to find its Workers/Assets/Widgets.
   // copy-cesium-assets.mjs places them at /public/cesium.
-  // window.CESIUM_BASE_URL is the canonical hook Cesium reads at runtime.
-  // (Defined in Cesium's source as a global before module init.)
+  // When deployed under a basePath (e.g. GitHub Pages /<repo-name>), prepend
+  // that basePath so Cesium fetches /<repo-name>/cesium/Workers/* correctly.
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).CESIUM_BASE_URL = "/cesium";
+  (window as any).CESIUM_BASE_URL = `${basePath}/cesium`;
 
   const token = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN;
   if (!token) {

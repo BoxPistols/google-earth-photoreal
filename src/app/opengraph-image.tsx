@@ -1,6 +1,9 @@
 import { ImageResponse } from "next/og";
 
+// Edge runtime + force-static so Next can pre-render the OG image at build
+// time for `output: 'export'`.
 export const runtime = "edge";
+export const dynamic = "force-static";
 export const alt = "Drone Flight Sim";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
