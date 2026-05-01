@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3333",
-    "build": "next build",
+    "build": "next build && node scripts/fix-octal-escapes.mjs",
     "start": "next start -p 3333",
     "lint": "next lint",
     "postinstall": "node scripts/copy-cesium-assets.mjs"
