@@ -24,15 +24,27 @@ import {
   attachActionKeys,
   attachMouseControls,
   drainActions,
+  drainMouseYawSilent,
   drainWheel,
   hasUserMotionInput,
+  peekMouseYaw,
   readControl,
   type CameraMode,
 } from "@/lib/input";
 import { updateCamera, adjustChaseDistance } from "@/lib/camera-modes";
 import { useSimStore } from "@/store/sim-store";
 import { registerSimHandle, clearSimHandle } from "@/lib/sim-handle";
-import { TOKYO_TOUR, type Landmark } from "@/lib/landmarks";
+import { TOKYO_TOUR } from "@/lib/landmarks";
+
+interface FlightLeg {
+  startTime: number;
+  duration: number; // ms
+  fromLocal: [number, number, number];
+  toLocal: [number, number, number];
+  arcLift: number; // m above straight-line midpoint
+  toLLA: { lon: number; lat: number; alt: number };
+  onArrive?: () => void;
+}
 
 // Origin altitude is treated as sea level — drone position z is metres above
 // that. The ENU origin moves with teleports so this stays a small offset.
@@ -43,9 +55,14 @@ const GOHERE_ARRIVE_HORIZ = 8;
 const GOHERE_ARRIVE_VERT = 5;
 const GOHERE_ALT_OFFSET = 60;
 
-// Auto-tour
-const TOUR_HOVER_MS = 6500;     // dwell at each landmark
-const TOUR_CINEMA_YAW = 0.28;   // yaw rate (-1..1) — slow cinematic rotation
+// Auto-tour: each landmark visit = brief hover then smooth fly to next.
+const TOUR_HOVER_MS = 2500;            // dwell time at each landmark, ms
+const TOUR_LEG_MIN_MS = 5000;          // leg duration floor
+const TOUR_LEG_MAX_MS = 14000;         // leg duration ceiling
+const TOUR_LEG_SPEED = 1200;           // m/s used to size leg duration
+const TOUR_LEG_PITCH = -0.12;          // ~7° nose-down lean while cruising
+const TOUR_LEG_ARC_FRACTION = 0.15;    // mid-leg lift = 15% of horizontal dist…
+const TOUR_LEG_ARC_MAX = 800;          // …capped at 800 m
 
 interface Origin {
   lon: number;
@@ -59,7 +76,13 @@ export default function Simulator() {
   const originRef = useRef<Origin>({ lon: SPAWN_LON, lat: SPAWN_LAT });
   const cameraModeRef = useRef<CameraMode>("chase");
   const goHereRef = useRef<[number, number, number] | null>(null);
-  const tourRef = useRef<{ index: number; arrivedAt: number } | null>(null);
+  const flightLegRef = useRef<FlightLeg | null>(null);
+  const tourRef = useRef<{
+    phase: "flying" | "hovering";
+    idx: number;
+    phaseStart: number;
+    phaseDuration: number;
+  } | null>(null);
   const lastTimeRef = useRef<number>(performance.now());
   const rafRef = useRef<number>(0);
 
@@ -187,7 +210,7 @@ export default function Simulator() {
       },
     });
 
-    // --- Teleport (used by Search and any future "fly to" command) -----------
+    // --- Teleport (instant; used internally) --------------------------------
     const teleport = (lon: number, lat: number, altitude: number) => {
       originRef.current = { lon, lat };
       stateRef.current = {
@@ -196,26 +219,114 @@ export default function Simulator() {
         velocity: [0, 0, 0],
       };
       goHereRef.current = null;
+      flightLegRef.current = null;
+    };
+
+    // --- Cinematic flight leg builder ---------------------------------------
+    // Stores everything in the *current* ENU frame; on arrival the origin is
+    // re-anchored to (lon, lat) so precision stays sharp at the destination.
+    const buildLeg = (
+      lon: number,
+      lat: number,
+      altitude: number,
+      onArrive?: () => void,
+    ): FlightLeg => {
+      const enuFrame = enuAtOrigin();
+      const enuInv = Cesium.Matrix4.inverseTransformation(
+        enuFrame,
+        new Cesium.Matrix4(),
+      );
+      const toCart = Cesium.Cartesian3.fromDegrees(lon, lat, altitude);
+      const toLocal = Cesium.Matrix4.multiplyByPoint(
+        enuInv,
+        toCart,
+        new Cesium.Cartesian3(),
+      );
+
+      const fromPos = stateRef.current.position;
+      const dx = toLocal.x - fromPos[0];
+      const dy = toLocal.y - fromPos[1];
+      const horizDist = Math.sqrt(dx * dx + dy * dy);
+
+      const duration = clamp(
+        (horizDist / TOUR_LEG_SPEED) * 1000,
+        TOUR_LEG_MIN_MS,
+        TOUR_LEG_MAX_MS,
+      );
+      const arcLift = clamp(
+        horizDist * TOUR_LEG_ARC_FRACTION,
+        150,
+        TOUR_LEG_ARC_MAX,
+      );
+
+      return {
+        startTime: performance.now(),
+        duration,
+        fromLocal: [fromPos[0], fromPos[1], fromPos[2]],
+        toLocal: [toLocal.x, toLocal.y, toLocal.z],
+        arcLift,
+        toLLA: { lon, lat, alt: altitude },
+        onArrive,
+      };
+    };
+
+    // --- Cinematic search fly (used by SearchBox and external callers) ------
+    const flyTo = (lon: number, lat: number, altitude: number) => {
+      // Cancel any active tour or go-here when the user invokes a manual fly.
+      stopTour();
+      goHereRef.current = null;
+      flightLegRef.current = buildLeg(lon, lat, altitude);
     };
 
     // --- Auto tour ----------------------------------------------------------
-    const goToLandmark = (lm: Landmark) => {
-      teleport(lm.lon, lm.lat, lm.altitude);
-      setTourState(true, lm.name);
-    };
-
-    const startTour = () => {
+    const TOUR_INTRO_MS = 1500; // brief pause after the initial snap
+    function startTour() {
       if (TOKYO_TOUR.length === 0) return;
-      tourRef.current = { index: 0, arrivedAt: performance.now() };
-      goToLandmark(TOKYO_TOUR[0]);
-    };
+      const first = TOKYO_TOUR[0];
+      teleport(first.lon, first.lat, first.altitude);
+      tourRef.current = {
+        phase: "hovering",
+        idx: 0,
+        phaseStart: performance.now(),
+        phaseDuration: TOUR_INTRO_MS,
+      };
+      setTourState(true, first.name);
+    }
 
-    const stopTour = () => {
+    function stopTour() {
       tourRef.current = null;
+      flightLegRef.current = null;
       setTourState(false, null);
+    }
+
+    const tourFlyToIndex = (idx: number) => {
+      const lm = TOKYO_TOUR[idx];
+      flightLegRef.current = buildLeg(lm.lon, lm.lat, lm.altitude, () => {
+        // On arrival: switch tour to hovering for a beat, then advance.
+        tourRef.current = {
+          phase: "hovering",
+          idx,
+          phaseStart: performance.now(),
+          phaseDuration: TOUR_HOVER_MS,
+        };
+        setTourState(true, lm.name);
+      });
+      tourRef.current = {
+        phase: "flying",
+        idx,
+        phaseStart: performance.now(),
+        phaseDuration: flightLegRef.current.duration,
+      };
+      setTourState(true, `→ ${lm.name}`);
     };
 
-    registerSimHandle({ scene: viewer.scene, teleport, startTour, stopTour });
+    registerSimHandle({
+      scene: viewer.scene,
+      teleport,
+      flyTo,
+      startTour,
+      stopTour,
+    });
 
     // --- Input wiring --------------------------------------------------------
     const detachKeys = attachKeyboard();
@@ -271,53 +382,98 @@ export default function Simulator() {
       if (wheel !== 0) adjustChaseDistance(wheel);
 
       if (!pausedRef.current) {
-        let input: ControlInput = readControl();
+        // User input cancels any cinematic playback (tour or fly-to).
+        const userInterrupt =
+          hasUserMotionInput() || Math.abs(peekMouseYaw()) > 1e-4;
+        if (userInterrupt) {
+          if (tourRef.current) stopTour();
+          if (flightLegRef.current && !tourRef.current) {
+            flightLegRef.current = null;
+          }
+        }
 
-        // Auto tour: advance landmarks on a timer, override input with a
-        // slow cinematic yaw. Any user motion key cancels the tour.
-        if (tourRef.current) {
-          if (hasUserMotionInput() || Math.abs(input.mouseYawRad) > 1e-4) {
-            stopTour();
-          } else {
-            const elapsed = now - tourRef.current.arrivedAt;
-            if (elapsed >= TOUR_HOVER_MS) {
-              tourRef.current.index += 1;
-              if (tourRef.current.index >= TOKYO_TOUR.length) {
-                stopTour();
-              } else {
-                goToLandmark(TOKYO_TOUR[tourRef.current.index]);
-                tourRef.current.arrivedAt = now;
-              }
-            }
-            if (tourRef.current) {
-              input = {
-                forward: 0,
-                vertical: 0,
-                yawRate: TOUR_CINEMA_YAW,
-                mouseYawRad: 0,
-                boost: 1,
-              };
+        // Tour state machine: drives flight legs on a timer.
+        if (tourRef.current && tourRef.current.phase === "hovering") {
+          const elapsed = now - tourRef.current.phaseStart;
+          if (elapsed >= tourRef.current.phaseDuration) {
+            const nextIdx = tourRef.current.idx + 1;
+            if (nextIdx >= TOKYO_TOUR.length) {
+              stopTour();
+            } else {
+              tourFlyToIndex(nextIdx);
             }
           }
         }
 
-        if (goHereRef.current) {
-          if (hasUserMotionInput() || Math.abs(input.mouseYawRad) > 1e-4) {
-            goHereRef.current = null;
-          } else {
-            input = computeGoHereInput(stateRef.current, goHereRef.current);
-            if (input === IDLE_INPUT) goHereRef.current = null;
+        // Process active flight leg (cinematic interpolation, bypasses physics).
+        let cinematic = false;
+        if (flightLegRef.current) {
+          const leg = flightLegRef.current;
+          const tNorm = Math.min(1, (now - leg.startTime) / leg.duration);
+          const e = easeInOut(tNorm);
+          const x = lerp(leg.fromLocal[0], leg.toLocal[0], e);
+          const y = lerp(leg.fromLocal[1], leg.toLocal[1], e);
+          const baseZ = lerp(leg.fromLocal[2], leg.toLocal[2], e);
+          const arcZ = baseZ + Math.sin(tNorm * Math.PI) * leg.arcLift;
+
+          const dx = leg.toLocal[0] - leg.fromLocal[0];
+          const dy = leg.toLocal[1] - leg.fromLocal[1];
+          const heading =
+            dx * dx + dy * dy > 1 ? Math.atan2(dx, dy) : stateRef.current.heading;
+
+          stateRef.current = {
+            ...stateRef.current,
+            position: [x, y, arcZ],
+            velocity: [0, 0, 0],
+            heading,
+            pitch: TOUR_LEG_PITCH,
+            roll: 0,
+          };
+          cinematic = true;
+
+          if (tNorm >= 1) {
+            // Arrived: re-anchor origin to destination so precision stays sharp.
+            originRef.current = { lon: leg.toLLA.lon, lat: leg.toLLA.lat };
+            stateRef.current = {
+              ...stateRef.current,
+              position: [0, 0, leg.toLLA.alt],
+              pitch: 0,
+              roll: 0,
+            };
+            const onArrive = leg.onArrive;
+            flightLegRef.current = null;
+            if (onArrive) onArrive();
           }
         }
 
-        const next = stepPhysics(stateRef.current, input, DEFAULT_PARAMS, dt);
-        stateRef.current = next;
+        let input: ControlInput | null = null;
+        if (!cinematic) {
+          input = readControl();
 
-        const intensity = Math.max(
-          Math.abs(input.forward),
-          Math.abs(input.vertical),
-          Math.abs(input.yawRate),
-        );
+          if (goHereRef.current) {
+            if (hasUserMotionInput() || Math.abs(input.mouseYawRad) > 1e-4) {
+              goHereRef.current = null;
+            } else {
+              input = computeGoHereInput(stateRef.current, goHereRef.current);
+              if (input === IDLE_INPUT) goHereRef.current = null;
+            }
+          }
+
+          const next = stepPhysics(stateRef.current, input, DEFAULT_PARAMS, dt);
+          stateRef.current = next;
+        } else {
+          // Drain mouseYaw accumulator so it doesn't pile up during tour.
+          drainMouseYawSilent();
+        }
+
+        const intensity = input
+          ? Math.max(
+              Math.abs(input.forward),
+              Math.abs(input.vertical),
+              Math.abs(input.yawRate),
+            )
+          : 1;
+        const next = stateRef.current;
         setTelemetry({
           altitudeM: next.position[2],
           speedMps: speedMps(next),
@@ -327,7 +483,9 @@ export default function Simulator() {
           pitchDeg: (next.pitch * 180) / Math.PI,
           rollDeg: (next.roll * 180) / Math.PI,
           battery: next.battery,
-          throttle: intensity * (input.boost > 1 ? 1 : intensity),
+          throttle: input
+            ? intensity * (input.boost > 1 ? 1 : intensity)
+            : 1,
         });
       }
 
@@ -407,4 +565,13 @@ function wrapPi(rad: number): number {
 
 function clamp(v: number, lo: number, hi: number) {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t;
+}
+
+/** Smooth ease-in-out (cubic) — feels nicer for cinematic flights than lin. */
+function easeInOut(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }

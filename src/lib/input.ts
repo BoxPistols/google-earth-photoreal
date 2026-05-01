@@ -150,6 +150,18 @@ export function drainMouseYaw(): number {
   return v;
 }
 
+/** Read mouseYaw without consuming it. Used by tour-cancel checks where the
+ *  cinematic path doesn't apply yaw but the next manual frame should. */
+export function peekMouseYaw(): number {
+  return _mouseYawAccum;
+}
+
+/** Quietly clear the mouseYaw accumulator (used when cinematic playback ate
+ *  the frame and we don't want stale mouse motion to apply later). */
+export function drainMouseYawSilent(): void {
+  _mouseYawAccum = 0;
+}
+
 export function drainWheel(): number {
   const v = _wheelAccum;
   _wheelAccum = 0;
