@@ -77,6 +77,8 @@ export default function Simulator() {
   const cameraModeRef = useRef<CameraMode>("chase");
   const goHereRef = useRef<[number, number, number] | null>(null);
   const flightLegRef = useRef<FlightLeg | null>(null);
+  const pinEntityRef = useRef<Cesium.Entity | null>(null);
+  const pinWorldRef = useRef<Cesium.Cartesian3 | null>(null);
   const tourRef = useRef<{
     phase: "flying" | "hovering";
     idx: number;
@@ -92,6 +94,8 @@ export default function Simulator() {
   const setTilesetReady = useSimStore((s) => s.setTilesetReady);
   const setTilesetError = useSimStore((s) => s.setTilesetError);
   const setTourState = useSimStore((s) => s.setTourState);
+  const setPendingPin = useSimStore((s) => s.setPendingPin);
+  const pendingPin = useSimStore((s) => s.pendingPin);
   const paused = useSimStore((s) => s.paused);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -331,9 +335,26 @@ export default function Simulator() {
     // --- Input wiring --------------------------------------------------------
     const detachKeys = attachKeyboard();
     const detachActions = attachActionKeys();
+    // --- Pin entity (lives in Cesium scene, position driven by ref) ----------
+    pinEntityRef.current = viewer.entities.add({
+      name: "PendingPin",
+      show: false,
+      position: new Cesium.CallbackProperty(
+        () => pinWorldRef.current ?? Cesium.Cartesian3.ZERO,
+        false,
+      ),
+      point: {
+        pixelSize: 18,
+        color: Cesium.Color.fromCssColorString("#fbbf24"),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    });
+
     const detachMouse = attachMouseControls(viewer.canvas, {
       isActive: () => cameraModeRef.current !== "free",
-      onDoubleClick: (clientX, clientY) => {
+      onClick: (clientX, clientY) => {
         const rect = viewer.canvas.getBoundingClientRect();
         const screen = new Cesium.Cartesian2(
           clientX - rect.left,
@@ -341,16 +362,23 @@ export default function Simulator() {
         );
         const world = viewer.scene.pickPosition(screen);
         if (!world) return;
-        const enuInv = Cesium.Matrix4.inverseTransformation(
-          enuAtOrigin(),
-          new Cesium.Matrix4(),
-        );
-        const local = Cesium.Matrix4.multiplyByPoint(
-          enuInv,
-          world,
-          new Cesium.Cartesian3(),
-        );
-        goHereRef.current = [local.x, local.y, local.z + GOHERE_ALT_OFFSET];
+
+        const carto = Cesium.Cartographic.fromCartesian(world);
+        const lon = Cesium.Math.toDegrees(carto.longitude);
+        const lat = Cesium.Math.toDegrees(carto.latitude);
+        const surfaceAlt = carto.height;
+
+        pinWorldRef.current = world;
+        if (pinEntityRef.current) pinEntityRef.current.show = true;
+
+        setPendingPin({
+          lon,
+          lat,
+          // Fly to a comfortable hover above the clicked surface (rooftop+80m)
+          altitude: surfaceAlt + 80,
+          clientX,
+          clientY,
+        });
       },
     });
 
@@ -512,6 +540,16 @@ export default function Simulator() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Hide the pin entity when the React store says no pin is pending.
+  useEffect(() => {
+    const pin = pinEntityRef.current;
+    if (!pin) return;
+    if (!pendingPin) {
+      pin.show = false;
+      pinWorldRef.current = null;
+    }
+  }, [pendingPin]);
 
   return (
     <div

@@ -13,6 +13,15 @@ export interface Telemetry {
   throttle: number;    // 0..1
 }
 
+export interface PendingPin {
+  lon: number;
+  lat: number;
+  altitude: number; // meters above ellipsoid for the fly destination
+  clientX: number;  // screen position where the user clicked
+  clientY: number;
+  label?: string;   // optional reverse-geocoded name
+}
+
 export interface ElevationSample {
   t: number;       // ms timestamp (performance.now relative)
   drone: number;   // drone altitude, m above ellipsoid
@@ -29,6 +38,7 @@ interface SimState {
   tourLandmarkName: string | null;
   elevationSamples: ElevationSample[];
   noFlyZoneVisible: boolean;
+  pendingPin: PendingPin | null;
   setTelemetry: (t: Telemetry) => void;
   setCameraMode: (m: CameraMode) => void;
   togglePause: () => void;
@@ -37,6 +47,7 @@ interface SimState {
   setTourState: (active: boolean, name: string | null) => void;
   pushElevationSample: (s: ElevationSample) => void;
   toggleNoFlyZone: () => void;
+  setPendingPin: (pin: PendingPin | null) => void;
 }
 
 export const useSimStore = create<SimState>((set) => ({
@@ -59,6 +70,7 @@ export const useSimStore = create<SimState>((set) => ({
   tourLandmarkName: null,
   elevationSamples: [],
   noFlyZoneVisible: false,
+  pendingPin: null,
   setTelemetry: (telemetry) => set({ telemetry }),
   setCameraMode: (cameraMode) => set({ cameraMode }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
@@ -74,4 +86,5 @@ export const useSimStore = create<SimState>((set) => ({
     }),
   toggleNoFlyZone: () =>
     set((s) => ({ noFlyZoneVisible: !s.noFlyZoneVisible })),
+  setPendingPin: (pendingPin) => set({ pendingPin }),
 }));

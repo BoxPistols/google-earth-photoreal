@@ -34,9 +34,13 @@ const ACTION_QUEUE: InputAction[] = [];
 
 let _mouseYawAccum = 0;
 let _wheelAccum = 0;
-let _isLeftDragging = false;
+let _isLeftDown = false;
+let _hasDragged = false;
+let _downX = 0;
+let _downY = 0;
 
 const MOUSE_YAW_RAD_PER_PX = 0.005; // ~0.3° per pixel of horizontal drag
+const DRAG_THRESHOLD_PX = 5; // distance the cursor must travel to count as drag
 
 // --- Keyboard -----------------------------------------------------------------
 
@@ -97,7 +101,7 @@ export function drainActions(): InputAction[] {
 // --- Mouse --------------------------------------------------------------------
 
 export interface MouseControlOptions {
-  onDoubleClick: (clientX: number, clientY: number) => void;
+  onClick: (clientX: number, clientY: number) => void;
   isActive: () => boolean; // false in free-cam mode → skip our handlers
 }
 
@@ -106,41 +110,51 @@ export function attachMouseControls(
   opts: MouseControlOptions,
 ): () => void {
   const onDown = (e: MouseEvent) => {
-    if (!opts.isActive()) return;
-    if (e.button !== 0) return;
-    _isLeftDragging = true;
+    if (!opts.isActive() || e.button !== 0) return;
+    _isLeftDown = true;
+    _hasDragged = false;
+    _downX = e.clientX;
+    _downY = e.clientY;
   };
   const onUp = (e: MouseEvent) => {
     if (e.button !== 0) return;
-    _isLeftDragging = false;
+    if (_isLeftDown && !_hasDragged && opts.isActive()) {
+      opts.onClick(e.clientX, e.clientY);
+    }
+    _isLeftDown = false;
+    _hasDragged = false;
   };
   const onMove = (e: MouseEvent) => {
-    if (!opts.isActive() || !_isLeftDragging) return;
-    _mouseYawAccum += e.movementX * MOUSE_YAW_RAD_PER_PX;
+    if (!opts.isActive() || !_isLeftDown) return;
+    if (!_hasDragged) {
+      const dx = e.clientX - _downX;
+      const dy = e.clientY - _downY;
+      if (dx * dx + dy * dy > DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+        _hasDragged = true;
+      }
+    }
+    if (_hasDragged) {
+      _mouseYawAccum += e.movementX * MOUSE_YAW_RAD_PER_PX;
+    }
   };
   const onWheel = (e: WheelEvent) => {
     if (!opts.isActive()) return;
     e.preventDefault();
     _wheelAccum += e.deltaY;
   };
-  const onDbl = (e: MouseEvent) => {
-    if (!opts.isActive()) return;
-    opts.onDoubleClick(e.clientX, e.clientY);
-  };
 
   target.addEventListener("mousedown", onDown);
   window.addEventListener("mouseup", onUp);
   window.addEventListener("mousemove", onMove);
   target.addEventListener("wheel", onWheel, { passive: false });
-  target.addEventListener("dblclick", onDbl);
 
   return () => {
     target.removeEventListener("mousedown", onDown);
     window.removeEventListener("mouseup", onUp);
     window.removeEventListener("mousemove", onMove);
     target.removeEventListener("wheel", onWheel);
-    target.removeEventListener("dblclick", onDbl);
-    _isLeftDragging = false;
+    _isLeftDown = false;
+    _hasDragged = false;
   };
 }
 
