@@ -9,6 +9,7 @@ const HUD = dynamic(() => import("@/components/HUD"), { ssr: false });
 const SearchBox = dynamic(() => import("@/components/SearchBox"), { ssr: false });
 const TourPanel = dynamic(() => import("@/components/TourPanel"), { ssr: false });
 const PinConfirm = dynamic(() => import("@/components/PinConfirm"), { ssr: false });
+const UpdateBanner = dynamic(() => import("@/components/UpdateBanner"), { ssr: false });
 const LoadingOverlay = dynamic(() => import("@/components/LoadingOverlay"), { ssr: false });
 
 export default function Page() {
@@ -19,6 +20,7 @@ export default function Page() {
       <SearchBox />
       <TourPanel />
       <PinConfirm />
+      <UpdateBanner />
       <LoadingOverlay />
     </Box>
   );
